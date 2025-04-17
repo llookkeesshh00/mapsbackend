@@ -26,26 +26,29 @@ function setupWebSocket(server) {
             }
 
             const { type, payload } = data;
+            
             //! 1.main user creates room and he gets added to the session
-
+               
             if (type === 'CREATE_ROOM') {
-                const { name } = payload;
+                const { name,points,destination } = payload;
                 const userId = uuidv4();
                 const roomId = createRoom(userId); // creator ID passed to room
 
                 const room = getRoom(roomId);
+                room.destination=destination
                 room.users[userId] = {
                     socketId: ws.id,
                     name,
                     location: null,
                     lastUpdated: null,
+                    points
                 };
 
                 socketMap[ws.id] = { roomId, userId };
 
                 // Respond with both room + user details
                 ws.send(JSON.stringify({
-                    type: 'ROOM_CREATED',
+                    type: 'CREATED_ROOM',
                     payload: {
                         roomId,
                         userId,
@@ -53,11 +56,12 @@ function setupWebSocket(server) {
                     }
                 }));
 
-                broadcastRoom(roomId,"CREATED_ROOM");
+                broadcastRoom(roomId,"UPDATED_ROOM");
             }
             //! 2.
             if (type === 'JOIN_ROOM') {
-                const { roomId, name } = payload;
+                const { roomId, name,points } = payload;
+                console.log("join reques",payload)
                 const roomdetails = getRoom(roomId);
                 if (!roomdetails)
                     return ws.send(JSON.stringify({ type: 'ERROR', payload: { message: 'Room not found' } }));
@@ -75,6 +79,7 @@ function setupWebSocket(server) {
                     name,
                     location: null,
                     lastUpdated: null,
+                    points
                 };
 
 
@@ -84,7 +89,9 @@ function setupWebSocket(server) {
 
 
                 ws.send(JSON.stringify({ type: 'JOIN_SUCCESS', payload: { roomId, userId: uid, users: roomdetails.users } }));
-                broadcastRoom(roomId,"JOINED_ROOM");
+                
+                
+                broadcastRoom(roomId,"UPDATED_ROOM");
             }
             //! 3. update fucntion takes userid , location cordinates
             if (type === 'UPDATE_LOCATION') {
@@ -110,7 +117,7 @@ function setupWebSocket(server) {
 
                 if (room && room.createdBy === payload.userId) {
                     // 1️⃣ Broadcast termination
-                    broadcastRoom(roomId,'TERMINATED_ROOM');
+                    broadcastRoom(roomId,'UPDATED_ROOM');
 
                     // 2️⃣ Clean up socketMap and close connections
                     Object.values(room.users).forEach(user => {
@@ -120,6 +127,7 @@ function setupWebSocket(server) {
                             client.close(); // ⛔ closes the WebSocket connection
                         }
                     });
+                    console.log("ROOM termintated")
 
                     // 3️⃣ Delete room
                     deleteRoom(roomId);
@@ -145,7 +153,7 @@ function setupWebSocket(server) {
             const room = getRoom(roomId);//rooms[roomId]
             if (room?.users[userId]) {
                 delete room.users[userId];
-                broadcastRoom(roomId,"DISCONNECT_ROOM");
+                broadcastRoom(roomId,"UPDATED_ROOM");
             }
 
             delete socketMap[ws.id];

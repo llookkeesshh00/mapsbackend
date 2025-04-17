@@ -1,6 +1,6 @@
 
 const rooms = {};
-//roomid:{ metadata,users array}
+//roomid:{ metadata, users array} using in 
 
 function createRoom(createdBy) {
   const roomId = generateRoomId(); 
