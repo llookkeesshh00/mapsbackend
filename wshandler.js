@@ -1,185 +1,223 @@
-// wsHandler.js
 const { rooms, createRoom, getRoom, deleteRoom } = require('./room.js');
 const { v4: uuidv4 } = require('uuid');
-//loses data if i close this program not server
-const socketMap = {};
 
+// Data lost on restart is expected without a DB or persistent store
+const socketMap = {}; // socketId -> { roomId, userId }
 
 function setupWebSocket(server) {
-    const WebSocket = require('ws');
-    const wss = new WebSocket.Server({ server });
-    //Maintains socketMap to track which socket belongs to which user and room.
-    // socketId -> { roomId, userId }
+  const WebSocket = require('ws');
+  const wss = new WebSocket.Server({ server });
 
-    wss.on('connection', (ws) => {
-        ws.id = uuidv4(); // unique socket ID
-        console.log("🔌 New socket connected:", ws.id);
-        //const socketMap = {};  dont place as server restsart it starts and loses its data
+  wss.on('connection', (ws) => {
+    ws.id = uuidv4();
+    console.log("🔌 New socket connected:", ws.id);
 
-        ws.on('message', (message) => {
-            let data;
-            try {
-                data = JSON.parse(message);
-            }
-            catch {
-                return;
-            }
+    ws.on('message', (message) => {
+      let data;
+      try {
+        data = JSON.parse(message);
+      } catch (err) {
+        console.warn(" Invalid JSON received");
+        return;
+      }
 
-            const { type, payload } = data;
-            
-            //! 1.main user creates room and he gets added to the session
-               
-            if (type === 'CREATE_ROOM') {
-                const { name,points,destination } = payload;
-                const userId = uuidv4();
-                const roomId = createRoom(userId); // creator ID passed to room
+      const { type, payload } = data;
 
-                const room = getRoom(roomId);
-                room.destination=destination
-                room.users[userId] = {
-                    socketId: ws.id,
-                    name,
-                    location: null,
-                    lastUpdated: null,
-                    points
-                };
+      switch (type) {
+        case 'CREATE_ROOM': {
+          const { name, location, destination, placeId } = payload;
+          const userId = uuidv4();
+          const roomId = createRoom(userId);
+          const room = getRoom(roomId);
 
-                socketMap[ws.id] = { roomId, userId };
+          const now = new Date();
+          const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+          const lastUpdated = formatTime(fiveMinutesAgo);
 
-                // Respond with both room + user details
-                ws.send(JSON.stringify({
-                    type: 'CREATED_ROOM',
-                    payload: {
-                        roomId,
-                        userId,
-                        users: room.users,
-                    }
-                }));
+          room.destination = destination;
+          room.placeId = placeId;
+          room.createdBy = userId;
+          room.createdAt = now.toISOString();
+          room.users[userId] = {
+            socketId: ws.id,
+            name,
+            location,
+            joinedAt: formatTime(now),
+            lastUpdated,
+          };
 
-                broadcastRoom(roomId,"UPDATED_ROOM");
-            }
-            //! 2.
-            if (type === 'JOIN_ROOM') {
-                const { roomId, name,points } = payload;
-                console.log("join reques",payload)
-                const roomdetails = getRoom(roomId);
-                if (!roomdetails)
-                    return ws.send(JSON.stringify({ type: 'ERROR', payload: { message: 'Room not found' } }));
+          socketMap[ws.id] = { roomId, userId };
 
-                if (socketMap[ws.id]?.roomId === roomId) {
-                    return ws.send(JSON.stringify({
-                        type: 'ERROR',
-                        payload: { message: 'You have already joined this room.' }
-                    }));
-                }
+          ws.send(JSON.stringify({
+            type: 'CREATED_ROOM',
+            payload: { roomId, userId, users: room.users, destination: room.destination, route: room.route }
+          }));
 
-                const uid = uuidv4(); // joined users will be assigned new uerid 
-                roomdetails.users[uid] = {
-                    socketId: ws.id,
-                    name,
-                    location: null,
-                    lastUpdated: null,
-                    points
-                };
-
-
-
-                //saving websocket connections : with (roomid,userId)
-                socketMap[ws.id] = { roomId, userId: uid };
-
-
-                ws.send(JSON.stringify({ type: 'JOIN_SUCCESS', payload: { roomId, userId: uid, users: roomdetails.users } }));
-                
-                
-                broadcastRoom(roomId,"UPDATED_ROOM");
-            }
-            //! 3. update fucntion takes userid , location cordinates
-            if (type === 'UPDATE_LOCATION') {
-                const { userId, location } = payload;
-                const { roomId } = socketMap[ws.id] || {};
-                const room = getRoom(roomId);
-                if (!room || !room.users[userId]) return;
-
-                room.users[userId].location = location;
-                room.users[userId].lastUpdated = new Date();
-
-                broadcastRoom(roomId,"UPDATED_ROOM");
-            }
-            //! 4. can leave room ( not admin)
-            if (type === 'LEAVE_ROOM') {
-                handleDisconnect(ws);
-            }
-            //! 5. can delete or terimate room ( only admin)
-           
-            if (type === 'TERMINATE_ROOM') {
-                const { roomId } = socketMap[ws.id] || {};
-                const room = getRoom(roomId);
-
-                if (room && room.createdBy === payload.userId) {
-                    // 1️⃣ Broadcast termination
-                    broadcastRoom(roomId,'UPDATED_ROOM');
-
-                    // 2️⃣ Clean up socketMap and close connections
-                    Object.values(room.users).forEach(user => {
-                        const client = [...wss.clients].find(c => c.id === user.socketId);
-                        if (client) {
-                            delete socketMap[client.id];
-                            client.close(); // ⛔ closes the WebSocket connection
-                        }
-                    });
-                    console.log("ROOM termintated")
-
-                    // 3️⃣ Delete room
-                    deleteRoom(roomId);
-                } else {
-                    ws.send(JSON.stringify({
-                        type: 'ERROR',
-                        payload: { message: 'Only the creator can terminate the room.' }
-                    }));
-                }
-            }
-
-
-        });
-
-        ws.on('close', () => {
-            handleDisconnect(ws);
-        });
-
-        function handleDisconnect(ws) {
-            const { roomId, userId } = socketMap[ws.id] || {};
-            if (!roomId || !userId) return;
-
-            const room = getRoom(roomId);//rooms[roomId]
-            if (room?.users[userId]) {
-                delete room.users[userId];
-                broadcastRoom(roomId,"UPDATED_ROOM");
-            }
-
-            delete socketMap[ws.id];
+          broadcastRoom(roomId, 'UPDATED_ROOM');
+          break;
         }
 
-        function broadcastRoom(roomId,mess) {
-            const room = getRoom(roomId);
-            if (!room) return;
+        case 'JOIN_ROOM': {
+          const { roomId, name, location } = payload;
+          const room = getRoom(roomId);
+          if (!room) {
+            return sendError(ws, 'Room not found');
+          }
 
-            const message = {
-                type: mess,
-                payload: { users: room.users }
-            };//
-            //? Loop through all connected WebSocket clients.   wss.clients is built-in — it's a Set of all active WebSocket connections.
-            //! O(N)
-            wss.clients.forEach(client => {
-                if (client.readyState === WebSocket.OPEN) {
-                    const { roomId: clientRoomId } = socketMap[client.id] || {};
-                    if (clientRoomId === roomId) {
-                        client.send(JSON.stringify(message));
-                    }
-                }
+          if (socketMap[ws.id]?.roomId === roomId) {
+            return sendError(ws, 'You have already joined this room.');
+          }
+
+          const userId = uuidv4();
+          const now = new Date();
+          const lastUpdated = formatTime(new Date(now.getTime() - 5 * 60 * 1000));
+
+          room.users[userId] = {
+            socketId: ws.id,
+            name,
+            location,
+            joinedAt: formatTime(now),
+            lastUpdated,
+          };
+
+          socketMap[ws.id] = { roomId, userId };
+
+          ws.send(JSON.stringify({
+            type: 'JOIN_SUCCESS',
+            payload: { roomId, userId, users: room.users, destination: room.destination, route: room.route }
+          }));
+
+          broadcastRoom(roomId, 'UPDATED_ROOM');
+          break;
+        }
+
+        case 'UPDATE_LOCATION': {
+          const { userId, location } = payload;
+          const roomId = socketMap[ws.id]?.roomId;
+          const room = getRoom(roomId);
+          if (!room || !room.users[userId]) return;
+
+          room.users[userId].location = location;
+          room.users[userId].lastUpdated = formatTime(new Date());
+
+          broadcastRoom(roomId, 'UPDATED_ROOM');
+          break;
+        }
+
+        case 'UPDATE_ROUTE': {
+          const { roomId, userId , route } = payload;
+          const room = getRoom(roomId);
+          if (!room) {
+            return sendError(ws, 'Room not found');
+          }
+
+          room.users[userId].route ={
+            points: route.points,
+            duration: route.duration,
+            distance: route.distance,
+            mode: route.mode
+          };
+
+          // Broadcast updated room with route to all users
+          broadcastRoom(roomId, 'UPDATE_ROUTE');
+          break;
+        }
+
+        case 'LEAVE_ROOM': {
+          handleDisconnect(ws);
+          break;
+        }
+
+        case 'TERMINATE_ROOM': {
+          const { roomId } = socketMap[ws.id] || {};
+          const room = getRoom(roomId);
+          const { userId } = payload;
+
+          if (room && room.createdBy === userId) {
+            broadcastRoom(roomId, 'ROOM_TERMINATED');
+
+            // Close all user sockets
+            Object.values(room.users).forEach(user => {
+              const client = [...wss.clients].find(c => c.id === user.socketId);
+              if (client) {
+                delete socketMap[client.id];
+                client.close(); // disconnect socket
+              }
             });
+
+            deleteRoom(roomId);
+            console.log("Room terminated:", roomId);
+          } else {
+            sendError(ws, 'Only the room creator can terminate it.');
+          }
+          break;
         }
 
+        default:
+          sendError(ws, 'Unknown message type');
+          break;
+      }
     });
+
+    ws.on('close', () => {
+      handleDisconnect(ws);
+    });
+
+    // ======================
+    // Helper Functions
+    // ======================
+
+    function handleDisconnect(ws) {
+      const { roomId, userId } = socketMap[ws.id] || {};
+      if (!roomId || !userId) return;
+
+      const room = getRoom(roomId);
+      if (room?.users[userId]) {
+        delete room.users[userId];
+        broadcastRoom(roomId, 'UPDATED_ROOM');
+      }
+
+      delete socketMap[ws.id];
+    }
+
+    function broadcastRoom(roomId, type) {
+      const room = getRoom(roomId);
+      if (!room) return;
+
+      const message = JSON.stringify({
+        type,
+        payload: {
+          users: room.users,
+          destination: room.destination,
+          route: room.route // Include route in broadcast
+        }
+      });
+
+      wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          const clientRoomId = socketMap[client.id]?.roomId;
+          if (clientRoomId === roomId) {
+            client.send(message);
+          }
+        }
+      });
+    }
+
+    function sendError(ws, message) {
+      ws.send(JSON.stringify({
+        type: 'ERROR',
+        payload: { message }
+      }));
+    }
+
+    function formatTime(date) {
+      return date.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: false,
+      });
+    }
+  });
 }
 
 module.exports = { setupWebSocket, socketMap };

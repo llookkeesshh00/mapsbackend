@@ -6,8 +6,9 @@ function createRoom(createdBy) {
   const roomId = generateRoomId(); 
   rooms[roomId] = {
     createdAt: new Date(),
-    createdBy, // filled when first user joins
-    users: {} // userId -> { socketId, location, name }
+    createdBy, 
+    users: {},
+    destination : {},
   };
   return roomId;
 }
