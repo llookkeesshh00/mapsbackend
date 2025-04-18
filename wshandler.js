@@ -84,7 +84,7 @@ function setupWebSocket(server) {
 
           ws.send(JSON.stringify({
             type: 'JOIN_SUCCESS',
-            payload: { roomId, userId, users: room.users, destination: room.destination, route: room.route }
+            payload: { roomId, userId, users: room.users, destination: room.destination }
           }));
 
           broadcastRoom(roomId, 'UPDATED_ROOM');
@@ -128,28 +128,44 @@ function setupWebSocket(server) {
           break;
         }
 
-        case 'TERMINATE_ROOM': {
-          const { roomId } = socketMap[ws.id] || {};
+        case 'GET_ROOM_DETAILS': {
+          const { roomId } = payload;
           const room = getRoom(roomId);
-          const { userId } = payload;
-
-          if (room && room.createdBy === userId) {
-            broadcastRoom(roomId, 'ROOM_TERMINATED');
-
-            // Close all user sockets
-            Object.values(room.users).forEach(user => {
-              const client = [...wss.clients].find(c => c.id === user.socketId);
-              if (client) {
-                delete socketMap[client.id];
-                client.close(); // disconnect socket
-              }
-            });
-
-            deleteRoom(roomId);
-            console.log("Room terminated:", roomId);
-          } else {
-            sendError(ws, 'Only the room creator can terminate it.');
+        
+          if (!room) {
+            return sendError(ws, 'Room not found');
           }
+          // Broadcast room to all users
+          broadcastRoom(roomId, 'ROOM_DETAILS');
+          break;
+        }
+
+        case 'TERMINATE_ROOM': {
+          const { roomId, userId } = payload;
+          const room = getRoom(roomId);
+          
+          if (!room) {
+            return sendError(ws, 'Room not found');
+          }
+          
+          if (room.createdBy !== userId) {
+            return sendError(ws, 'Only the room creator can terminate it.');
+          }
+          
+          // First broadcast termination to all users
+          broadcastRoom(roomId, 'ROOM_TERMINATED');
+          
+          // Then close connections and cleanup
+          wss.clients.forEach(client => {
+            const clientData = socketMap[client.id];
+            if (clientData && clientData.roomId === roomId) {
+              delete socketMap[client.id];
+              // No need to manually close - clients will handle disconnect
+            }
+          });
+          
+          deleteRoom(roomId);
+          console.log("Room terminated:", roomId);
           break;
         }
 
@@ -187,9 +203,11 @@ function setupWebSocket(server) {
       const message = JSON.stringify({
         type,
         payload: {
+          roomId,
           users: room.users,
           destination: room.destination,
-          route: room.route // Include route in broadcast
+          createdAt: room.createdAt,
+          createdBy: room.createdBy,
         }
       });
 

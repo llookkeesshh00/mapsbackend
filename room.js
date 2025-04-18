@@ -7,7 +7,8 @@ function createRoom(createdBy) {
   rooms[roomId] = {
     createdAt: new Date(),
     createdBy, 
-    users: {},
+    users: {
+    },
     destination : {},
   };
   return roomId;
