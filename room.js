@@ -1,15 +1,12 @@
-
 const rooms = {};
-//roomid:{ metadata, users array} using in 
 
 function createRoom(createdBy) {
-  const roomId = generateRoomId(); 
+  const roomId = generateRoomId();
   rooms[roomId] = {
     createdAt: new Date(),
-    createdBy, 
-    users: {
-    },
-    destination : {},
+    createdBy,
+    users: {},
+    destination: { latitude: null, longitude: null },
   };
   return roomId;
 }
