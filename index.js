@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
-
+const PORT = process.env.PORT || 3001;
 const { PrismaClient } = require('@prisma/client');
 const {setupWebSocket,socketMap }=require('./wshandler')
 const { rooms } = require('./room.js');
@@ -27,6 +27,6 @@ app.get('/socket-details', async (req, res) => {
 
 setupWebSocket(server);
 //now make ws servr listen as it is binded with http
-server.listen(3001, () => {
+ server.listen(PORT, () => {
   console.log('ws running on http://localhost:3001');
 });
